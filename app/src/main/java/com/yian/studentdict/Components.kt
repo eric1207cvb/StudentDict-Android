@@ -1,168 +1,184 @@
 package com.yian.studentdict
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// --- 米字格 (MiZiGeView) ---
-// [Version Update] Reason: Replaced SwiftUI Path with Compose Canvas
+// 1. 【列表視圖】
 @Composable
-fun MiZiGeView(char: String, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .size(100.dp) // 預設大小
-            .background(Color.White)
-            .border(3.dp, Color.Red),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.matchParentSize()) {
-            val width = size.width
-            val height = size.height
-            val pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-
-            // 繪製虛線
-            drawLine(Color.Red.copy(alpha = 0.4f), Offset(0f, height/2), Offset(width, height/2), pathEffect = pathEffect)
-            drawLine(Color.Red.copy(alpha = 0.4f), Offset(width/2, 0f), Offset(width/2, height), pathEffect = pathEffect)
-            drawLine(Color.Red.copy(alpha = 0.4f), Offset(0f, 0f), Offset(width, height), pathEffect = pathEffect)
-            drawLine(Color.Red.copy(alpha = 0.4f), Offset(width, 0f), Offset(0f, height), pathEffect = pathEffect)
-        }
-        Text(text = char, fontSize = 60.sp, color = Color.Black)
-    }
-}
-
-// --- 列表卡片 (WordCardView) ---
-@Composable
-fun WordCardView(item: DictItem) {
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(8.dp),
-        colors = CardDefaults.cardColors(containerColor = AppTheme.CardBackground),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            // 左側單字顯示
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .background(AppTheme.Primary.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
-                    .padding(8.dp)
-            ) {
-                Text(item.word, fontSize = 24.sp, color = AppTheme.Primary, fontWeight = FontWeight.Bold)
-                Text(item.phonetic, fontSize = 12.sp, color = AppTheme.Secondary)
-            }
-            Spacer(modifier = Modifier.width(16.dp))
-            // 右側解釋
-            Column {
-                Text(item.definition, maxLines = 2, style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-    }
-}
-
-// --- 注音鍵盤 (ZhuyinKeyboardView) ---
-// [Version Update] Reason: Android implementation of custom keyboard
-@Composable
-fun ZhuyinKeyboard(
-    onKeyClick: (String) -> Unit,
-    onDelete: () -> Unit
+fun SearchResultRow(
+    item: DictItem,
+    onClick: () -> Unit
 ) {
-    val configuration = LocalConfiguration.current
-    val isTablet = configuration.screenWidthDp > 600
-    val haptic = LocalHapticFeedback.current
-
-    val bopomofoChars = BopomofoData.initials + BopomofoData.medials + BopomofoData.finals
-    val tones = listOf("ˉ", "ˊ", "ˇ", "ˋ", "˙")
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (isTablet) 420.dp else 320.dp) // 模擬 iOS 高度
-            .background(Color(0xFFF2F2F7)) // systemGray6
-            .padding(8.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        // 1. 聲調列
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            tones.forEach { tone ->
-                Button(
-                    onClick = {
-                        onKeyClick(tone)
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    },
-                    modifier = Modifier.weight(1f).padding(2.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text(tone, color = Color.Black)
-                }
-            }
-            // 刪除鍵
-            Button(
-                onClick = {
-                    onDelete()
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                },
-                modifier = Modifier.weight(1f).padding(2.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)
-            ) {
-                Icon(Icons.Default.Close, contentDescription = "Delete", tint = Color.Black)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // 2. 注音區
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = if (isTablet) 50.dp else 36.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            items(bopomofoChars) { char ->
-                Box(
-                    modifier = Modifier
-                        .aspectRatio(1.1f)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(Color.White)
-                        .clickable {
-                            onKeyClick(char)
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    // [Version Update] Reason: Color logic logic from iOS
-                    val textColor = when {
-                        BopomofoData.medials.contains(char) -> Color.Green
-                        BopomofoData.finals.contains(char) -> AppTheme.Secondary
-                        else -> Color.Black
+            // 單字
+            Text(
+                text = item.word,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // 注音
+            Text(
+                text = item.phonetic,
+                fontSize = 18.sp,
+                color = Color.Gray
+            )
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            // 箭頭
+            Icon(
+                Icons.Default.KeyboardArrowRight,
+                contentDescription = null,
+                tint = Color.LightGray
+            )
+        }
+        Divider(color = Color(0xFFEEEEEE), thickness = 1.dp, modifier = Modifier.padding(top = 12.dp))
+    }
+}
+
+// 2. 【詳情頁面】
+// 👇 關鍵修改：加入這個註解來消除 Experimental 錯誤
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WordDetailScreen(
+    item: DictItem,
+    onBack: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            // Material3 的 TopAppBar 需要 OptIn
+            SmallTopAppBar(
+                title = { Text("詳細釋義") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
-                    Text(text = char, fontSize = 18.sp, color = textColor, fontWeight = FontWeight.Bold)
+                },
+                colors = TopAppBarDefaults.smallTopAppBarColors(
+                    containerColor = AppTheme.Background
+                )
+            )
+        },
+        containerColor = AppTheme.Background
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(modifier = Modifier.padding(24.dp).fillMaxWidth()) {
+
+                    // --- 頂部單字與彩色注音區 ---
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    ) {
+                        // 超大單字
+                        Text(
+                            text = item.word,
+                            fontSize = 48.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppTheme.Primary
+                        )
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        // 彩色注音
+                        Column {
+                            val chars = item.phonetic.toCharArray().map { it.toString() }
+                            Row {
+                                chars.forEach { char ->
+                                    val color = when {
+                                        BopomofoData.initials.contains(char) -> Color(0xFF1976D2)
+                                        BopomofoData.medials.contains(char) -> Color(0xFF388E3C)
+                                        BopomofoData.finals.contains(char) -> Color(0xFFF57C00)
+                                        BopomofoData.tones.contains(char) -> Color(0xFFD32F2F)
+                                        else -> Color.Gray
+                                    }
+                                    Text(
+                                        text = char,
+                                        fontSize = 24.sp,
+                                        color = color,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Divider(color = Color.LightGray, thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // --- 基本資料區 ---
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        InfoBadge(label = "部首", value = item.radical.ifEmpty { "無" })
+                        Spacer(modifier = Modifier.width(16.dp))
+                        InfoBadge(label = "總筆畫", value = "${item.strokeCount}")
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // --- 釋義區 ---
+                    Text(
+                        text = "解釋：",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppTheme.Secondary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    val formattedDef = item.definition.replace("n", "nn")
+                    Text(
+                        text = formattedDef,
+                        fontSize = 18.sp,
+                        color = Color(0xFF333333),
+                        lineHeight = 28.sp
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+fun InfoBadge(label: String, value: String) {
+    Column {
+        Text(text = label, fontSize = 12.sp, color = Color.Gray)
+        Text(text = value, fontSize = 18.sp, color = Color.Black, fontWeight = FontWeight.Medium)
     }
 }

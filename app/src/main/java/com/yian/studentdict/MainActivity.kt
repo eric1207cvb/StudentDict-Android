@@ -1,8 +1,15 @@
 package com.yian.studentdict
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
+import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -10,11 +17,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Mic // 👈 新增麥克風圖示
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,10 +35,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.yian.studentdict.data.AppDatabase
 import com.yian.studentdict.data.DictEntity
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,178 +56,294 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun ContentView() {
-    // 1. 初始化資料庫
     val context = LocalContext.current
-    // 注意：請確保 AppDatabase 裡的檔名已經改成 "student_dict_v2.db" 或更新的版本
     val db = remember { AppDatabase.getDatabase(context) }
     val dao = remember { db.dictDao() }
     val scope = rememberCoroutineScope()
 
-    // 👇👇👇 【新增】自動檢查資料庫的小間諜 👇👇👇
-    LaunchedEffect(Unit) {
-        scope.launch {
-            println("🕵️‍♂️ === 資料庫自我檢查開始 ===")
-            try {
-                // 故意搜尋空字串，這會列出資料庫裡的前 50 筆資料
-                val testList = dao.search("")
-                println("🕵️‍♂️ 資料庫回傳筆數: ${testList.size} 筆")
-
-                if (testList.isNotEmpty()) {
-                    val firstItem = testList.first()
-                    println("✅ 資料庫讀取成功！")
-                    println("🕵️‍♂️ 範例資料: ID=${firstItem.id}, Word=${firstItem.word}, Phone=${firstItem.phonetic}")
-                } else {
-                    println("❌ 資料庫是空的！(Size = 0)")
-                    println("👉 請檢查：")
-                    println("1. assets 資料夾裡是否有 dictionary.sqlite？")
-                    println("2. 請嘗試去 AppDatabase.kt 把檔名改成 'student_dict_v3.db' 強迫重建。")
-                }
-            } catch (e: Exception) {
-                println("❌ 資料庫查詢發生錯誤: ${e.message}")
-                e.printStackTrace()
-            }
-            println("🕵️‍♂️ === 資料庫自我檢查結束 ===")
-        }
-    }
-    // 👆👆👆 檢查結束 👆👆👆
-
-    // 2. 狀態變數
+    // --- 狀態變數 ---
     var searchText by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<DictEntity>>(emptyList()) }
     var showCustomKeyboard by remember { mutableStateOf(true) }
 
+    // 部首模式
+    var isRadicalMode by remember { mutableStateOf(false) }
+    var allRadicals by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedRadical by remember { mutableStateOf<String?>(null) }
+
+    // 詳情頁狀態
+    var currentDetailItem by remember { mutableStateOf<DictEntity?>(null) }
+
     val configuration = LocalConfiguration.current
     val isTablet = configuration.screenWidthDp > 600
 
-    Scaffold(
-        topBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(AppTheme.Background)
-                    .padding(top = 16.dp, bottom = 8.dp)
-            ) {
-                Text(
-                    text = "國語辭典簡編本",
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    color = AppTheme.Primary
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .height(if (isTablet) 50.dp else 40.dp)
-                        .background(AppTheme.CardBackground, RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray)
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clickable { showCustomKeyboard = true },
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        if (searchText.isEmpty()) {
-                            Text("輸入單字...", color = Color.Gray)
-                        } else {
-                            Text(searchText, color = Color.Black)
-                        }
-                    }
-
-                    if (searchText.isNotEmpty()) {
-                        IconButton(onClick = {
-                            searchText = ""
-                            results = emptyList()
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.Gray)
-                        }
-                    }
-
-                    IconButton(onClick = { showCustomKeyboard = !showCustomKeyboard }) {
-                        Icon(
-                            imageVector = if (showCustomKeyboard) Icons.Default.Close else Icons.Default.Edit,
-                            contentDescription = "Toggle Keyboard",
-                            tint = AppTheme.Secondary
-                        )
-                    }
-                }
-            }
-        },
-        bottomBar = {
-            Column {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(60.dp)
-                        .background(Color.LightGray),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("AdMob Banner Area", color = Color.DarkGray)
-                }
-
-                AnimatedVisibility(
-                    visible = showCustomKeyboard,
-                    enter = slideInVertically { it },
-                    exit = slideOutVertically { it }
-                ) {
-                    ZhuyinKeyboard(
-                        onKeyClick = { char ->
-                            searchText += char
-                            scope.launch {
-                                results = dao.search(searchText)
-                            }
-                        },
-                        onDelete = {
-                            if (searchText.isNotEmpty()) {
-                                searchText = searchText.dropLast(1)
-                                scope.launch {
-                                    if (searchText.isNotEmpty()) {
-                                        results = dao.search(searchText)
-                                    } else {
-                                        results = emptyList()
-                                    }
-                                }
-                            }
-                        }
-                    )
+    // 🔥 1. 設定語音輸入的啟動器
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            // 取得語音辨識的結果 (通常是 List，取第一個最準確的)
+            val spokenText = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!spokenText.isNullOrEmpty()) {
+                // 將語音轉成文字填入搜尋框
+                searchText = spokenText
+                // 清除部首模式，準備搜尋
+                isRadicalMode = false
+                selectedRadical = null
+                // 立即執行搜尋
+                scope.launch {
+                    results = dao.search(searchText)
                 }
             }
         }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .padding(innerPadding)
-                .fillMaxSize()
-                .background(AppTheme.Background)
-        ) {
-            if (results.isEmpty() && searchText.isNotEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("搜尋中 / 查無結果", color = Color.Gray)
-                }
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+    }
+
+    LaunchedEffect(Unit) {
+        scope.launch { allRadicals = dao.getAllRadicals() }
+    }
+
+    // 攔截返回鍵
+    BackHandler(enabled = currentDetailItem != null) {
+        currentDetailItem = null
+    }
+
+    // 顯示詳情頁或主畫面
+    if (currentDetailItem != null) {
+        val item = currentDetailItem!!.let {
+            DictItem(
+                word = it.word ?: "",
+                phonetic = it.phonetic ?: "",
+                definition = it.definition ?: "",
+                radical = it.radical ?: "",
+                strokeCount = it.strokeCount ?: 0
+            )
+        }
+        WordDetailScreen(
+            item = item,
+            onBack = { currentDetailItem = null }
+        )
+    } else {
+        Scaffold(
+            topBar = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AppTheme.Background)
+                        .padding(top = 16.dp, bottom = 8.dp)
                 ) {
-                    items(results) { entity ->
-                        WordCardView(
-                            item = DictItem(
-                                // 👇 使用 ?: 運算子，如果是 null 就給它空字串 ""
-                                word = entity.word ?: "",
-                                phonetic = entity.phonetic ?: "",
-                                definition = entity.definition ?: "",
-                                radical = entity.radical ?: "",
-                                strokeCount = entity.strokeCount ?: 0
-                            )
+                    // Top Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = if (selectedRadical != null) "部首：$selectedRadical" else "國語辭典簡編本",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = AppTheme.Primary,
+                            fontWeight = FontWeight.Bold
                         )
+
+                        Button(
+                            onClick = {
+                                isRadicalMode = !isRadicalMode
+                                selectedRadical = null
+                                searchText = ""
+                                results = emptyList()
+                                showCustomKeyboard = !isRadicalMode
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = if(isRadicalMode) AppTheme.Secondary else Color.Gray)
+                        ) {
+                            Icon(Icons.Default.List, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (isRadicalMode) "關閉部首" else "部首表")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Search Bar
+                    if (!isRadicalMode || selectedRadical != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .height(if (isTablet) 50.dp else 40.dp)
+                                .background(AppTheme.CardBackground, RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray)
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            Box(
+                                modifier = Modifier.weight(1f).fillMaxHeight().clickable {
+                                    if (isRadicalMode) {
+                                        isRadicalMode = false
+                                        selectedRadical = null
+                                        results = emptyList()
+                                    }
+                                    showCustomKeyboard = true
+                                },
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (searchText.isEmpty() && selectedRadical == null) {
+                                    Text("輸入單字或注音...", color = Color.Gray)
+                                } else if (selectedRadical != null) {
+                                    Text("正在顯示「$selectedRadical」部首的字", color = AppTheme.Primary)
+                                } else {
+                                    Text(searchText, color = Color.Black)
+                                }
+                            }
+
+                            if (searchText.isNotEmpty() || selectedRadical != null) {
+                                IconButton(onClick = {
+                                    searchText = ""
+                                    selectedRadical = null
+                                    results = emptyList()
+                                    if (isRadicalMode) results = emptyList()
+                                }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.Gray)
+                                }
+                            }
+
+                            // 🔥 2. 這裡改成語音輸入按鈕 (原本的橘色按鈕)
+                            IconButton(onClick = {
+                                try {
+                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW") // 強制使用繁體中文
+                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "請說出想查的字詞...")
+                                    }
+                                    voiceLauncher.launch(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "您的裝置不支援語音輸入", Toast.LENGTH_SHORT).show()
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic, // 麥克風圖示
+                                    contentDescription = "Voice Input",
+                                    tint = AppTheme.Secondary // 維持橘色
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            bottomBar = {
+                Column {
+                    // Ad placeholder
+                    Box(modifier = Modifier.fillMaxWidth().height(50.dp).background(Color.LightGray), contentAlignment = Alignment.Center) {
+                        Text("AdMob Banner Area", color = Color.DarkGray, fontSize = 12.sp)
+                    }
+
+                    // Keyboard
+                    AnimatedVisibility(
+                        visible = showCustomKeyboard,
+                        enter = slideInVertically { it },
+                        exit = slideOutVertically { it }
+                    ) {
+                        ZhuyinKeyboard(
+                            results = results,
+                            onKeyClick = { char ->
+                                isRadicalMode = false
+                                selectedRadical = null
+                                searchText += char
+                                scope.launch { results = dao.search(searchText) }
+                            },
+                            onDelete = {
+                                if (searchText.isNotEmpty()) {
+                                    searchText = searchText.dropLast(1)
+                                    scope.launch {
+                                        results = if (searchText.isNotEmpty()) dao.search(searchText) else emptyList()
+                                    }
+                                }
+                            },
+                            onCandidateSelect = { entity ->
+                                currentDetailItem = entity
+                            }
+                        )
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .fillMaxSize()
+                    .background(AppTheme.Background)
+            ) {
+                if (isRadicalMode && selectedRadical == null) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("請選擇部首：", modifier = Modifier.padding(bottom = 8.dp), color = Color.Gray)
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = 60.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(allRadicals) { radical ->
+                                Box(
+                                    modifier = Modifier
+                                        .aspectRatio(1f)
+                                        .background(Color.White, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            selectedRadical = radical
+                                            scope.launch {
+                                                results = dao.getWordsByRadical(radical)
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(radical, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AppTheme.Primary)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if (results.isEmpty()) {
+                        if (searchText.isNotEmpty()) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("查無結果", color = Color.Gray)
+                            }
+                        } else if (selectedRadical == null && !isRadicalMode) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("👋 歡迎使用", fontSize = 24.sp, color = Color.Gray)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("輸入單字、注音，或是點擊上方「部首表」查找", color = Color.LightGray)
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            if (selectedRadical != null) {
+                                item {
+                                    Text(
+                                        "部首「$selectedRadical」共 ${results.size} 字",
+                                        color = Color.Gray,
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
+                            }
+
+                            items(results) { entity ->
+                                SearchResultRow(
+                                    item = DictItem(
+                                        word = entity.word ?: "",
+                                        phonetic = entity.phonetic ?: "",
+                                        definition = entity.definition ?: "",
+                                        radical = entity.radical ?: "",
+                                        strokeCount = entity.strokeCount ?: 0
+                                    ),
+                                    onClick = {
+                                        currentDetailItem = entity
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
