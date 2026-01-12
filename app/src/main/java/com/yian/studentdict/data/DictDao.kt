@@ -6,38 +6,35 @@ import androidx.room.Query
 @Dao
 interface DictDao {
     /**
-     * 超級搜尋功能 v3 (字典聲調排序版)：
-     * 1. 精確度優先。
-     * 2. 字數少的優先。
-     * 3. 【關鍵】聲調排序：透過 REPLACE 把聲調符號換成數字，強制 1->2->3->4->輕聲 排列。
+     * 超級搜尋功能 v6 (注音嚴格首字匹配版)：
+     * 1. 【關鍵修正】搜尋注音時，改為「開頭符合 (Prefix Match)」。
+     * 例如：打「ㄨㄛ」，只會出現「我(ㄨㄛ)」，不會再出現「多(ㄉㄨㄛ)」。
+     * 2. 依然保持單字優先。
+     * 3. 依然保持字典聲調排序。
      */
     @Query("""
         SELECT * FROM dict_mini 
         WHERE word LIKE '%' || :keyword || '%' 
-           OR REPLACE(REPLACE(phonetic, ' ', ''), '　', '') LIKE '%' || :keyword || '%' 
+           -- 🔥 修改重點：注音搜尋改為「開頭符合」，拿掉前面的 '%'
+           OR REPLACE(REPLACE(phonetic, ' ', ''), '　', '') LIKE :keyword || '%' 
         ORDER BY 
-           -- 1. 精確度：開頭符合的排前面
-           CASE WHEN word LIKE :keyword || '%' THEN 0 
+           -- 1. 【絕對優先】：搜尋字詞完全一樣
+           CASE WHEN word = :keyword THEN 0 ELSE 1 END ASC,
+
+           -- 2. 【單字優先】：單字排在詞前面
+           CASE WHEN length(word) = 1 THEN 0 ELSE 1 END ASC,
+
+           -- 3. 【匹配權重】(因為改成 Prefix Match 了，這裡主要影響 word 的排序)
+           CASE 
                 WHEN REPLACE(REPLACE(phonetic, ' ', ''), '　', '') LIKE :keyword || '%' THEN 0 
-                ELSE 1 END ASC,
-                
-           -- 2. 字數：短的排前面 (例如查「一」，「一」要在「一個」前面)
-           length(word) ASC, 
+                ELSE 1 
+           END ASC,
            
-           -- 3. ★ 字典聲調排序邏輯 ★
-           -- 將聲調符號替換為數字以修正 Unicode 排序錯誤 (原本三聲ˇ會排在二聲ˊ前面)
-           -- 順序：一聲(1) -> 二聲(2) -> 三聲(3) -> 四聲(4) -> 輕聲(5)
-           REPLACE(
-             REPLACE(
-               REPLACE(
-                 REPLACE(
-                   REPLACE(phonetic, '˙', '5'), -- 輕聲變 5
-                 'ˋ', '4'),                     -- 四聲變 4
-               'ˇ', '3'),                       -- 三聲變 3
-             'ˊ', '2'),                         -- 二聲變 2
-           ' ', '1') ASC,                       -- 空白(一聲)變 1
+           -- 4. 【聲調排序】：1->2->3->4->5
+           REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phonetic, '˙', '5'), 'ˋ', '4'), 'ˇ', '3'), 'ˊ', '2'), ' ', '1') ASC,
            
-           -- 4. 最後才是筆畫
+           -- 5. 【部首與筆畫】
+           radical ASC,
            stroke_count ASC
         LIMIT 100
     """)
@@ -47,7 +44,7 @@ interface DictDao {
     @Query("SELECT DISTINCT radical FROM dict_mini WHERE radical IS NOT NULL AND radical != '' ORDER BY stroke_count ASC")
     suspend fun getAllRadicals(): List<String>
 
-    // 部首檢索：也加上聲調排序邏輯
+    // 部首檢索
     @Query("""
         SELECT * FROM dict_mini 
         WHERE radical = :radical 

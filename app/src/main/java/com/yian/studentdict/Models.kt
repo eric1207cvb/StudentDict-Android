@@ -5,36 +5,48 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yian.studentdict.data.DictEntity
 import java.util.UUID
 
-// --- 1. 基礎設定與主題顏色 ---
+// --- 1. iOS 深色主題配色 ---
 object AppTheme {
-    val Background = Color(0xFFF2F2F7)
-    val CardBackground = Color.White
-    val Primary = Color.Blue
+    val Background = Color(0xFF000000)
+    val KeyboardBackground = Color(0xFF1C1C1E)
+    val KeyBackground = Color(0xFF2C2C2E)
+    val ToneBackground = Color(0xFF3A2556)
+    val Primary = Color(0xFF0A84FF)
+    val TextWhite = Color(0xFFE5E5E5)
     val Secondary = Color(0xFFFF9800)
+    val CardBackground = Color(0xFF1C1C1E)
 }
 
 object KeyboardColors {
-    val Initials = Color(0xFFBBDEFB) // 藍
-    val Medials = Color(0xFFC8E6C9)  // 綠
-    val Finals = Color(0xFFFFE0B2)   // 橘
-    val Tones = Color(0xFFF8BBD0)    // 粉
-    val Function = Color(0xFFE0E0E0) // 灰
-    val Text = Color(0xFF333333)
+    val Consonants = Color(0xFFE5E5E5)
+    val Medials = Color(0xFF4CAF50)
+    val Finals = Color(0xFFFF9800)
+
+    val ToneText = Color(0xFFD1C4E9)
+    val ToneSubText = Color(0xFF9575CD)
+
+    val LegalText = Color(0xFF636366)
 }
 
 object BopomofoData {
@@ -43,7 +55,6 @@ object BopomofoData {
     val finals = listOf("ㄚ", "ㄛ", "ㄜ", "ㄝ", "ㄞ", "ㄟ", "ㄠ", "ㄡ", "ㄢ", "ㄣ", "ㄤ", "ㄥ", "ㄦ")
     val tones = listOf("ˉ", "ˊ", "ˇ", "ˋ", "˙")
     val all: Set<String> = (initials + medials + finals + tones).toSet()
-    fun isBopomofo(char: String): Boolean = all.contains(char)
 }
 
 data class DictItem(
@@ -59,79 +70,135 @@ object DatabaseManager {
     fun search(keyword: String): List<DictItem> = emptyList()
 }
 
-// --- 5. 橫式候選字列 ---
+// --- 5. 候選字列 (單字過濾 + 翻頁版) ---
 @Composable
 fun CandidateBar(
     candidates: List<DictEntity>,
     onCandidateClick: (DictEntity) -> Unit
 ) {
-    val pageSize = 7
+    // 🔥 1. 強制過濾：只顯示「單字 (長度=1)」，不顯示詞語
+    // 使用 remember 避免每次重繪都重新計算
+    val singleCharCandidates = remember(candidates) {
+        candidates.filter { (it.word?.length ?: 0) == 1 }
+    }
+
+    // 🔥 2. 分頁設定
+    val pageSize = 8 // 每頁顯示 8 個字 (配合寬度)
     var currentPage by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(candidates) { currentPage = 0 }
+    // 當搜尋結果改變時，重置回第一頁
+    LaunchedEffect(singleCharCandidates) {
+        currentPage = 0
+    }
 
-    val totalPages = (candidates.size + pageSize - 1) / pageSize
+    // 計算總頁數與當前頁面資料
+    val totalPages = (singleCharCandidates.size + pageSize - 1) / pageSize
     val safePage = if (totalPages > 0) currentPage.coerceIn(0, totalPages - 1) else 0
-    val currentCandidates = if (candidates.isNotEmpty()) {
-        candidates.chunked(pageSize).getOrElse(safePage) { emptyList() }
+
+    val currentPageItems = if (singleCharCandidates.isNotEmpty()) {
+        singleCharCandidates.chunked(pageSize).getOrElse(safePage) { emptyList() }
     } else {
         emptyList()
     }
 
-    if (candidates.isNotEmpty()) {
-        Column {
-            Divider(color = Color.LightGray, thickness = 1.dp)
+    if (singleCharCandidates.isNotEmpty()) {
+        Column(modifier = Modifier.background(AppTheme.KeyboardBackground)) {
+            // 提示文字
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
-                    .background(Color(0xFFFAFAFA)),
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = AppTheme.Secondary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                // 顯示頁碼提示，例如 (1/5)
+                Text(
+                    text = "點擊選字 (${safePage + 1}/$totalPages)",
+                    color = Color.Gray,
+                    fontSize = 12.sp
+                )
+            }
+
+            // 候選字列表容器
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // [上一頁] 按鈕
                 IconButton(
                     onClick = { if (safePage > 0) currentPage-- },
-                    enabled = safePage > 0,
-                    modifier = Modifier.width(40.dp)
+                    enabled = safePage > 0, // 第一頁時停用
+                    modifier = Modifier.width(32.dp)
                 ) {
-                    Icon(Icons.Default.KeyboardArrowLeft, "Prev", tint = if (safePage > 0) Color.Black else Color.LightGray)
+                    Icon(
+                        Icons.Default.KeyboardArrowLeft,
+                        "Prev",
+                        tint = if (safePage > 0) AppTheme.Primary else Color.DarkGray
+                    )
                 }
 
+                // [候選字] 區域
                 Row(
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    currentCandidates.forEach { entity ->
-                        TextButton(
-                            onClick = { onCandidateClick(entity) },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(0.dp)
+                    currentPageItems.forEach { entity ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(2.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onCandidateClick(entity) },
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = entity.word ?: "",
                                 fontSize = 22.sp,
-                                color = Color.Black,
+                                color = AppTheme.TextWhite, // 白色字比較清楚
                                 maxLines = 1,
-                                fontWeight = FontWeight.Bold
+                                softWrap = false,
+                                textAlign = TextAlign.Center
                             )
+                        }
+                    }
+
+                    // 如果這頁沒滿，補上空白格佔位，保持排版不變形
+                    if (currentPageItems.size < pageSize) {
+                        repeat(pageSize - currentPageItems.size) {
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                 }
 
+                // [下一頁] 按鈕
                 IconButton(
                     onClick = { if (safePage < totalPages - 1) currentPage++ },
-                    enabled = safePage < totalPages - 1,
-                    modifier = Modifier.width(40.dp)
+                    enabled = safePage < totalPages - 1, // 最後一頁時停用
+                    modifier = Modifier.width(32.dp)
                 ) {
-                    Icon(Icons.Default.KeyboardArrowRight, "Next", tint = if (safePage < totalPages - 1) Color.Black else Color.LightGray)
+                    Icon(
+                        Icons.Default.KeyboardArrowRight,
+                        "Next",
+                        tint = if (safePage < totalPages - 1) AppTheme.Primary else Color.DarkGray
+                    )
                 }
             }
-            Divider(color = Color.LightGray, thickness = 1.dp)
         }
     }
 }
 
-// --- 6. 兒童友善版注音鍵盤 (最終乾淨版) ---
+// --- 6. iOS 風格注音鍵盤 ---
 @Composable
 fun ZhuyinKeyboard(
     results: List<DictEntity>,
@@ -139,160 +206,125 @@ fun ZhuyinKeyboard(
     onDelete: () -> Unit,
     onCandidateSelect: (DictEntity) -> Unit
 ) {
-    val keyHeight = 46.dp
-    val rowSpacing = 6.dp
+    val keyHeight = 48.dp
+    val spacing = 6.dp
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFECEFF1))
-            .navigationBarsPadding() // 避開底部手勢區
+            .background(AppTheme.KeyboardBackground)
+            .navigationBarsPadding()
     ) {
         CandidateBar(candidates = results, onCandidateClick = onCandidateSelect)
 
         Column(
             modifier = Modifier
-                .padding(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 8.dp) // 底部空間留一點就好
+                .padding(6.dp)
                 .fillMaxWidth()
         ) {
-            // 第 0 排：聲調 + 刪除鍵 (向右切齊)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                // 左側補白 (3格)
-                Spacer(modifier = Modifier.weight(3f))
-
-                // 聲調 (5格)
-                listOf("ˉ", "ˊ", "ˇ", "ˋ", "˙").forEach { key ->
-                    KeyButton(
-                        text = key,
-                        modifier = Modifier.weight(1f).height(keyHeight),
-                        backgroundColor = KeyboardColors.Tones,
-                        fontSize = 24.sp,
-                        onClick = { onKeyClick(key) }
-                    )
+            // 第 1 排：聲調 + 刪除鍵
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                val tones = listOf("ˉ" to "一聲", "ˊ" to "二聲", "ˇ" to "三聲", "ˋ" to "四聲", "˙" to "輕聲")
+                tones.forEach { (symbol, label) ->
+                    ToneButton(symbol, label, Modifier.weight(1f).height(keyHeight)) { onKeyClick(symbol) }
                 }
-
-                // 刪除鍵 (2格)
-                Button(
-                    onClick = onDelete,
-                    modifier = Modifier.weight(2f).height(keyHeight),
-                    colors = ButtonDefaults.buttonColors(containerColor = KeyboardColors.Function),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(0.dp),
-                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 0.dp)
+                Box(
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .height(keyHeight)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFF48484A))
+                        .clickable(onClick = onDelete),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Delete", tint = Color.Black)
+                    Icon(Icons.Default.Backspace, "Backspace", tint = Color.White)
                 }
             }
-            Spacer(modifier = Modifier.height(rowSpacing))
+            Spacer(modifier = Modifier.height(spacing))
 
-            // 第 1 排：聲母
-            UniformRow(
-                keys = listOf("ㄅ", "ㄆ", "ㄇ", "ㄈ", "ㄉ", "ㄊ", "ㄋ", "ㄌ"),
-                bgColor = KeyboardColors.Initials,
-                totalSlots = 10,
-                keyHeight = keyHeight,
-                onKeyClick = onKeyClick
-            )
-            Spacer(modifier = Modifier.height(rowSpacing))
-
-            // 第 2 排：聲母
-            UniformRow(
-                keys = listOf("ㄍ", "ㄎ", "ㄏ", "ㄐ", "ㄑ", "ㄒ", "ㄓ", "ㄔ"),
-                bgColor = KeyboardColors.Initials,
-                totalSlots = 10,
-                keyHeight = keyHeight,
-                onKeyClick = onKeyClick
-            )
-            Spacer(modifier = Modifier.height(rowSpacing))
-
-            // 第 3 排：聲母 + 介音
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Spacer(modifier = Modifier.weight(1f))
-                listOf("ㄕ", "ㄖ", "ㄗ", "ㄘ", "ㄙ").forEach { key ->
-                    KeyButton(key, Modifier.weight(1f).height(keyHeight), KeyboardColors.Initials, onClick = { onKeyClick(key) })
-                }
-                listOf("ㄧ", "ㄨ", "ㄩ").forEach { key ->
-                    KeyButton(key, Modifier.weight(1f).height(keyHeight), KeyboardColors.Medials, onClick = { onKeyClick(key) })
-                }
-                Spacer(modifier = Modifier.weight(1f))
+            // 第 2 排
+            val row2 = listOf("ㄅ", "ㄆ", "ㄇ", "ㄈ", "ㄉ", "ㄊ", "ㄋ", "ㄌ", "ㄍ", "ㄎ")
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                row2.forEach { char -> NormalKey(char, KeyboardColors.Consonants, Modifier.weight(1f).height(keyHeight), onKeyClick) }
             }
-            Spacer(modifier = Modifier.height(rowSpacing))
+            Spacer(modifier = Modifier.height(spacing))
 
-            // 第 4 排：韻母
-            UniformRow(
-                keys = listOf("ㄚ", "ㄛ", "ㄜ", "ㄝ", "ㄞ", "ㄟ", "ㄠ", "ㄡ"),
-                bgColor = KeyboardColors.Finals,
-                totalSlots = 10,
-                keyHeight = keyHeight,
-                onKeyClick = onKeyClick
-            )
-            Spacer(modifier = Modifier.height(rowSpacing))
+            // 第 3 排
+            val row3 = listOf("ㄏ", "ㄐ", "ㄑ", "ㄒ", "ㄓ", "ㄔ", "ㄕ", "ㄖ", "ㄗ", "ㄘ")
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                row3.forEach { char -> NormalKey(char, KeyboardColors.Consonants, Modifier.weight(1f).height(keyHeight), onKeyClick) }
+            }
+            Spacer(modifier = Modifier.height(spacing))
 
-            // 第 5 排：韻母結尾 (置中)
-            UniformRow(
-                keys = listOf("ㄢ", "ㄣ", "ㄤ", "ㄥ", "ㄦ"),
-                bgColor = KeyboardColors.Finals,
-                totalSlots = 10,
-                keyHeight = keyHeight,
-                onKeyClick = onKeyClick
-            )
+            // 第 4 排
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                NormalKey("ㄙ", KeyboardColors.Consonants, Modifier.weight(1f).height(keyHeight), onKeyClick)
+                listOf("ㄧ", "ㄨ", "ㄩ").forEach { NormalKey(it, KeyboardColors.Medials, Modifier.weight(1f).height(keyHeight), onKeyClick) }
+                listOf("ㄚ", "ㄛ", "ㄜ", "ㄝ", "ㄞ", "ㄟ").forEach { NormalKey(it, KeyboardColors.Finals, Modifier.weight(1f).height(keyHeight), onKeyClick) }
+            }
+            Spacer(modifier = Modifier.height(spacing))
+
+            // 第 5 排
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                val lastRow = listOf("ㄠ", "ㄡ", "ㄢ", "ㄣ", "ㄤ", "ㄥ", "ㄦ")
+                lastRow.forEach { NormalKey(it, KeyboardColors.Finals, Modifier.weight(1f).height(keyHeight), onKeyClick) }
+                Spacer(modifier = Modifier.weight(3f))
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            LegalFooter()
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
 
-// --- 輔助元件 ---
+// --- 元件 ---
 @Composable
-fun UniformRow(
-    keys: List<String>,
-    bgColor: Color,
-    totalSlots: Int,
-    keyHeight: androidx.compose.ui.unit.Dp,
-    fontSize: TextUnit = 22.sp,
-    onKeyClick: (String) -> Unit
-) {
-    val keyCount = keys.size
-    val spacerWeight = (totalSlots - keyCount) / 2f
+fun NormalKey(char: String, color: Color, modifier: Modifier, onClick: (String) -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(AppTheme.KeyBackground)
+            .clickable { onClick(char) },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = char, color = color, fontSize = 20.sp, fontWeight = FontWeight.Normal)
+    }
+}
 
+@Composable
+fun ToneButton(symbol: String, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(AppTheme.ToneBackground)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(text = symbol, color = KeyboardColors.ToneText, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.offset(y = 2.dp))
+            Text(text = label, color = KeyboardColors.ToneSubText, fontSize = 10.sp, lineHeight = 10.sp)
+        }
+    }
+}
+
+@Composable
+fun LegalFooter() {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        if (spacerWeight > 0) Spacer(modifier = Modifier.weight(spacerWeight))
-        keys.forEach { key ->
-            KeyButton(
-                text = key,
-                modifier = Modifier.weight(1f).height(keyHeight),
-                backgroundColor = bgColor,
-                fontSize = fontSize,
-                onClick = { onKeyClick(key) }
-            )
+        val textStyle = SpanStyle(color = KeyboardColors.LegalText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        val annotatedString = buildAnnotatedString {
+            pushStringAnnotation(tag = "PRIVACY", annotation = "privacy")
+            withStyle(textStyle) { append("隱私權政策") }
+            pop()
+            withStyle(textStyle) { append("   |   ") }
+            pushStringAnnotation(tag = "EULA", annotation = "eula")
+            withStyle(textStyle) { append("使用者授權合約 (EULA)") }
+            pop()
         }
-        if (spacerWeight > 0) Spacer(modifier = Modifier.weight(spacerWeight))
-    }
-}
-
-@Composable
-fun KeyButton(
-    text: String,
-    modifier: Modifier = Modifier,
-    backgroundColor: Color = Color.White,
-    fontSize: TextUnit = 22.sp,
-    onClick: () -> Unit
-) {
-    Button(
-        onClick = onClick,
-        modifier = modifier,
-        colors = ButtonDefaults.buttonColors(containerColor = backgroundColor),
-        shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(0.dp),
-        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 1.dp)
-    ) {
-        Text(
-            text = text,
-            fontSize = fontSize,
-            color = KeyboardColors.Text,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.wrapContentSize(Alignment.Center)
-        )
+        Text(text = annotatedString, modifier = Modifier.clickable { })
     }
 }
