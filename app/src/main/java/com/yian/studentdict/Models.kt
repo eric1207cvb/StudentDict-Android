@@ -24,6 +24,11 @@ import androidx.compose.ui.unit.sp
 import com.yian.studentdict.data.DictEntity
 import java.util.UUID
 
+// --- 🟢 [Version Update] 全域訂閱狀態 ---
+object UserState {
+    var isAdFree by mutableStateOf(false) // 預設顯示廣告，付費後改為 true
+}
+
 // --- 1. iOS 深色主題配色 ---
 object AppTheme {
     val Background = Color(0xFF000000)
@@ -54,12 +59,8 @@ data class DictItem(
     val strokeCount: Int = 0
 )
 
-/**
- * 🟢 [Fix] 康熙部首順序表 (繁體中文筆畫順序)
- */
 object RadicalOrder {
     const val LIST = "一丨丶丿乙亅二亠人儿入八冂冖冫几凵刀力勹匕匚匸十卜卩厂厶又口囗土士夂夊夕大女子宀寸小尢尸屮山巛工己巾干幺广廴廾弋弓彐彡彳心戈戶手支攴文斗斤方无日曰月木欠止歹殳毋比毛氏气水火爪父爻爿片牙牛犬玄玉瓜瓦甘生用田疋疒癶白皮皿目矛矢石示禸禾穴立竹米糸缶网羊羽老而耒耳聿肉臣自至臼舌舛舟艮色艸虍虫血行衣襾見角言谷豆豕豸貝赤走足身車辛辰辵邑酉釆里金長門阜隶隹雨青非面革韋韭音頁風飛食首香馬骨高髟鬥鬯鬲鬼魚鳥鹵鹿麥麻黃黍黑黹黽鼎鼓鼠鼻齊齒龍龜龠"
-
     val VARIANTS = mapOf(
         "亻" to "人", "𠆢" to "人", "刂" to "刀", "⺈" to "刀",
         "忄" to "心", "⺗" to "心", "㣺" to "心", "扌" to "手",
@@ -69,7 +70,6 @@ object RadicalOrder {
         "旡" to "无", "巜" to "川", "川" to "巛", "彑" to "彐",
         "旦" to "日", "母" to "毋", "灬" to "火", "王" to "玉"
     )
-
     fun getIndex(radical: String): Int {
         val canonical = VARIANTS[radical] ?: radical
         val index = LIST.indexOf(canonical)
@@ -88,9 +88,7 @@ fun CandidateBar(
     }
     val pageSize = 8
     var currentPage by remember { mutableIntStateOf(0) }
-
     LaunchedEffect(singleCharCandidates) { currentPage = 0 }
-
     val totalPages = (singleCharCandidates.size + pageSize - 1) / pageSize
     val safePage = if (totalPages > 0) currentPage.coerceIn(0, totalPages - 1) else 0
     val currentPageItems = if (singleCharCandidates.isNotEmpty()) {
@@ -148,6 +146,20 @@ fun ZhuyinKeyboard(
     val keyHeight = 48.dp
     val spacing = 6.dp
     Column(modifier = Modifier.fillMaxWidth().background(AppTheme.KeyboardBackground).navigationBarsPadding()) {
+
+        // 🟢 [Version Update] 廣告空間佔位：僅在非付費狀態顯示
+        if (!UserState.isAdFree) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .background(Color.DarkGray.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("AdMob Banner Area", color = Color.White, fontSize = 10.sp)
+            }
+        }
+
         CandidateBar(candidates = results, onCandidateClick = onCandidateSelect)
         Column(modifier = Modifier.padding(6.dp).fillMaxWidth()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
@@ -205,11 +217,21 @@ fun ToneButton(symbol: String, label: String, modifier: Modifier, onClick: () ->
 
 @Composable
 fun LegalFooter() {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         val textStyle = SpanStyle(color = KeyboardColors.LegalText, fontSize = 11.sp)
         val annotatedString = buildAnnotatedString {
-            withStyle(textStyle) { append("隱私權政策   |   使用者授權合約 (EULA)") }
+            // 🟢 [Version Update] 點擊觸發付費/隱私權邏輯
+            withStyle(textStyle) { append("隱私權政策   |   使用者授權合約   |   ") }
+            withStyle(textStyle.copy(color = AppTheme.Secondary, fontWeight = FontWeight.Bold)) {
+                append(if (UserState.isAdFree) "專業版已啟用" else "移除廣告")
+            }
         }
-        Text(text = annotatedString)
+        Text(text = annotatedString, modifier = Modifier.clickable {
+            // 這裡未來會串接 RevenueCat 的購買函數
+        })
     }
 }

@@ -65,6 +65,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("com.google.android.gms:play-services-ads:22.6.0")
+    implementation("com.revenuecat.purchases:purchases:7.10.1")
     ksp(libs.androidx.room.compiler)
     // -------------------
 
