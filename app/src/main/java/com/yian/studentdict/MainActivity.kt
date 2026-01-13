@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Search
@@ -35,7 +36,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,30 +51,28 @@ import com.revenuecat.purchases.*
 import com.revenuecat.purchases.interfaces.ReceiveCustomerInfoCallback
 import com.yian.studentdict.data.AppDatabase
 import com.yian.studentdict.data.DictEntity
+import com.yian.studentdict.data.HistoryEntity
 import kotlinx.coroutines.launch
+
+// 全域狀態管理
+object UserState {
+    var isAdFree by mutableStateOf(false)
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         MobileAds.initialize(this) {}
-
         Purchases.configure(
             PurchasesConfiguration.Builder(this, "goog_JCoyQUudGrxMArsKUtXsNcEHicQ").build()
         )
-
         Purchases.sharedInstance.getCustomerInfo(object : ReceiveCustomerInfoCallback {
             override fun onReceived(customerInfo: CustomerInfo) {
                 UserState.isAdFree = customerInfo.entitlements["premium"]?.isActive == true
             }
             override fun onError(error: PurchasesError) {}
         })
-
-        setContent {
-            MaterialTheme {
-                ContentView()
-            }
-        }
+        setContent { MaterialTheme { ContentView() } }
     }
 }
 
@@ -85,6 +86,8 @@ fun ContentView() {
 
     var searchText by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<DictEntity>>(emptyList()) }
+    var historyList by remember { mutableStateOf<List<HistoryEntity>>(emptyList()) }
+
     var showCustomKeyboard by remember { mutableStateOf(true) }
     var isRadicalMode by remember { mutableStateOf(false) }
     var allRadicals by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -94,9 +97,81 @@ fun ContentView() {
     val configuration = LocalConfiguration.current
     val isTablet = configuration.screenWidthDp > 600
 
-    // 判斷是否為聲調符號的輔助函式
-    fun isToneSymbol(char: String): Boolean {
-        return listOf("ˊ", "ˇ", "ˋ", "˙").contains(char)
+    fun isToneSymbol(char: String): Boolean = listOf("ˊ", "ˇ", "ˋ", "˙").contains(char)
+
+    fun isZhuyin(char: Char): Boolean {
+        // 包含標準注音符號與聲調
+        return (char in '\u3105'..'\u3129') || listOf('ˉ', 'ˊ', 'ˇ', 'ˋ', '˙').contains(char)
+    }
+
+    // 🟢 修正後的混合搜尋邏輯
+    suspend fun mixedSearch(input: String): List<DictEntity> {
+        val hasZhuyin = input.any { isZhuyin(it) }
+        val hasChinese = input.any { !isZhuyin(it) }
+
+        // 1. 如果不是混合輸入 (純國字或純注音)，走原本的搜尋
+        if (!hasZhuyin || !hasChinese) {
+            var list = dao.search(input)
+            // 如果注音搜尋沒結果，嘗試自動補一聲
+            if (list.isEmpty() && hasZhuyin && !isToneSymbol(input.last().toString())) {
+                list = dao.search(input + "ˉ")
+            }
+            return list.sortedBy { it.word?.length }
+        }
+
+        // 2. 混合模式 (例如：老ㄕ)
+        // 找出最後一個國字的位置，切割字串
+        val lastChineseIndex = input.indexOfLast { !isZhuyin(it) }
+        val chinesePart = input.substring(0, lastChineseIndex + 1) // "老"
+        val zhuyinPart = input.substring(lastChineseIndex + 1).trim() // "ㄕ"
+
+        if (chinesePart.isEmpty()) return emptyList()
+
+        // 🟢 關鍵修正：改用 getCandidates 抓取前 500 筆符合開頭的資料
+        // 這樣可以避免 "老師" 因為排序問題被擠出前 100 名
+        val candidates = dao.getCandidates(chinesePart)
+
+        return candidates.filter { entity ->
+            val word = entity.word ?: ""
+            val phonetic = entity.phonetic ?: "" // 格式可能為 "ㄌㄠˇ　ㄕ" (全形空白)
+
+            // 如果單字長度比輸入的國字部分還短，不可能匹配
+            if (word.length <= chinesePart.length) return@filter false
+
+            // 🟢 關鍵修正：使用 Regex("\\s+") 同時處理半形與全形空白
+            val phoneticParts = phonetic
+                .replace("　", " ") // 先把全形空白轉半形，以防萬一
+                .split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+
+            // 我們要比對的是「輸入國字長度」位置的注音
+            // 例如 "老(index 0) ㄕ"，我們要比對 phoneticParts[1]
+            val targetIndex = chinesePart.length
+
+            if (targetIndex < phoneticParts.size) {
+                // 去除聲調後比對
+                val targetPhonetic = phoneticParts[targetIndex]
+                    .replace("ˉ", "").replace("ˊ", "").replace("ˇ", "").replace("ˋ", "").replace("˙", "")
+
+                targetPhonetic.startsWith(zhuyinPart)
+            } else {
+                false
+            }
+        }.sortedBy { it.word?.length }
+    }
+
+    fun addToHistory(word: String) {
+        scope.launch {
+            dao.insertHistory(HistoryEntity(word = word, timestamp = System.currentTimeMillis()))
+            historyList = dao.getHistory()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        scope.launch {
+            allRadicals = dao.getAllRadicals().filter { it.isNotBlank() }.sortedBy { RadicalOrder.getIndex(it) }
+            historyList = dao.getHistory()
+        }
     }
 
     val voiceLauncher = rememberLauncherForActivityResult(
@@ -109,53 +184,27 @@ fun ContentView() {
                 isRadicalMode = false
                 selectedRadical = null
                 scope.launch {
-                    results = dao.search(searchText)
-                        .filter { it.word?.startsWith(searchText) == true }
-                        .sortedBy { it.word?.length }
+                    results = mixedSearch(searchText)
+                    if (results.isNotEmpty()) {
+                        addToHistory(searchText)
+                    }
                 }
             }
         }
     }
 
-    LaunchedEffect(Unit) {
-        scope.launch {
-            val rawList = dao.getAllRadicals()
-            allRadicals = rawList
-                .filter { it.isNotBlank() }
-                .sortedBy { RadicalOrder.getIndex(it) }
-        }
-    }
-
-    BackHandler(enabled = currentDetailItem != null) {
-        currentDetailItem = null
-    }
+    BackHandler(enabled = currentDetailItem != null) { currentDetailItem = null }
 
     if (currentDetailItem != null) {
         val item = currentDetailItem!!.let {
-            DictItem(
-                word = it.word ?: "",
-                phonetic = it.phonetic ?: "",
-                definition = it.definition ?: "",
-                radical = it.radical ?: "",
-                strokeCount = it.strokeCount ?: 0
-            )
+            DictItem(word = it.word ?: "", phonetic = it.phonetic ?: "", definition = it.definition ?: "", radical = it.radical ?: "", strokeCount = it.strokeCount ?: 0)
         }
         WordDetailScreen(item = item, onBack = { currentDetailItem = null })
     } else {
         Scaffold(
             topBar = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(AppTheme.Background)
-                        .padding(top = 16.dp, bottom = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                Column(modifier = Modifier.fillMaxWidth().background(AppTheme.Background).padding(top = 16.dp, bottom = 8.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = if (selectedRadical != null) "部首：$selectedRadical" else "國語辭典簡編本",
                             style = MaterialTheme.typography.titleLarge,
@@ -165,76 +214,41 @@ fun ContentView() {
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (!UserState.isAdFree) {
-                                Surface(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { purchasePro(activity) },
-                                    color = AppTheme.Secondary.copy(alpha = 0.15f)
-                                ) {
-                                    Text(
-                                        "移除廣告",
-                                        color = AppTheme.Secondary,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                                    )
+                                Surface(modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { purchasePro(activity) }, color = AppTheme.Secondary.copy(alpha = 0.2f)) {
+                                    Text("移除廣告", color = AppTheme.Secondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp))
                                 }
                             }
-
-                            Button(
-                                onClick = {
-                                    isRadicalMode = !isRadicalMode
-                                    selectedRadical = null
-                                    searchText = ""
-                                    results = emptyList()
-                                    showCustomKeyboard = !isRadicalMode
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.height(34.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isRadicalMode) AppTheme.Primary else AppTheme.KeyBackground
-                                )
-                            ) {
-                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text(if (isRadicalMode) "關閉" else "部首", fontSize = 12.sp)
+                            Surface(modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
+                                isRadicalMode = !isRadicalMode
+                                selectedRadical = null
+                                searchText = ""
+                                results = emptyList()
+                                showCustomKeyboard = !isRadicalMode
+                            }, color = if (isRadicalMode) AppTheme.Primary else AppTheme.KeyBackground) {
+                                Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.List, null, modifier = Modifier.size(16.dp), tint = if (isRadicalMode) Color.White else AppTheme.Primary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(if (isRadicalMode) "關閉" else "部首", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isRadicalMode) Color.White else AppTheme.Primary)
+                                }
                             }
                         }
                     }
-
                     Spacer(modifier = Modifier.height(12.dp))
-
                     if (!isRadicalMode || selectedRadical != null) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                                .height(if (isTablet) 52.dp else 44.dp)
-                                .background(AppTheme.CardBackground, RoundedCornerShape(10.dp))
-                                .padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray)
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(if (isTablet) 52.dp else 44.dp).background(AppTheme.CardBackground, RoundedCornerShape(10.dp)).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Search, null, tint = Color.Gray)
                             Spacer(modifier = Modifier.width(8.dp))
-
-                            Box(
-                                modifier = Modifier.weight(1f).fillMaxHeight().clickable {
-                                    if (isRadicalMode) {
-                                        isRadicalMode = false
-                                        selectedRadical = null
-                                        results = emptyList()
-                                    }
-                                    showCustomKeyboard = true
-                                },
-                                contentAlignment = Alignment.CenterStart
-                            ) {
+                            Box(modifier = Modifier.weight(1f).fillMaxHeight().clickable {
+                                if (isRadicalMode) {
+                                    isRadicalMode = false
+                                    selectedRadical = null
+                                    results = emptyList()
+                                }
+                                showCustomKeyboard = true
+                            }, contentAlignment = Alignment.CenterStart) {
                                 if (searchText.isEmpty() && selectedRadical == null) {
                                     Text("輸入單字或注音...", color = Color.Gray)
                                 } else if (selectedRadical != null) {
@@ -243,139 +257,129 @@ fun ContentView() {
                                     Text(text = searchText, color = Color.White, fontSize = 18.sp)
                                 }
                             }
-
                             if (searchText.isNotEmpty() || selectedRadical != null) {
                                 IconButton(onClick = {
                                     searchText = ""
                                     selectedRadical = null
                                     results = emptyList()
-                                }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.Gray)
-                                }
+                                    scope.launch { historyList = dao.getHistory() }
+                                }) { Icon(Icons.Default.Close, null, tint = Color.Gray) }
                             }
-
                             IconButton(onClick = {
                                 try {
-                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW")
-                                    }
-                                    voiceLauncher.launch(intent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "不支援語音輸入", Toast.LENGTH_SHORT).show()
-                                }
-                            }) {
-                                Icon(Icons.Default.Mic, contentDescription = "Voice", tint = AppTheme.Secondary)
-                            }
+                                    voiceLauncher.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply { putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM); putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW") })
+                                } catch (e: Exception) { Toast.makeText(context, "不支援語音輸入", Toast.LENGTH_SHORT).show() }
+                            }) { Icon(Icons.Default.Mic, null, tint = AppTheme.Secondary) }
                         }
                     }
                 }
             },
             bottomBar = {
                 Column {
-                    if (!UserState.isAdFree) {
-                        BannerAdView()
-                    }
-
+                    if (!UserState.isAdFree) BannerAdView()
                     AnimatedVisibility(
                         visible = showCustomKeyboard,
                         enter = slideInVertically { it },
                         exit = slideOutVertically { it }
                     ) {
-                        ZhuyinKeyboard(
-                            results = results,
-                            onKeyClick = { char ->
-                                isRadicalMode = false
-                                selectedRadical = null
-                                searchText += char
-                                scope.launch {
-                                    // 🟢 智慧搜尋優化
-                                    var searchResults = dao.search(searchText)
-
-                                    // 💡 如果目前搜尋不到結果，且使用者輸入的不是聲調（可能是隱藏的一聲）
-                                    if (searchResults.isEmpty() && !isToneSymbol(char)) {
-                                        // 嘗試加上「ˉ」一聲標記再搜一次
-                                        searchResults = dao.search(searchText + "ˉ")
-                                    }
-
-                                    results = searchResults.sortedBy { it.word?.length }
-                                }
-                            },
-                            onDelete = {
-                                if (searchText.isNotEmpty()) {
-                                    searchText = searchText.dropLast(1)
+                        Column {
+                            ZhuyinKeyboard(
+                                results = results,
+                                onKeyClick = { char ->
+                                    isRadicalMode = false
+                                    selectedRadical = null
+                                    searchText += char
                                     scope.launch {
-                                        results = if (searchText.isNotEmpty()) {
-                                            dao.search(searchText).sortedBy { it.word?.length }
-                                        } else {
-                                            emptyList()
+                                        results = mixedSearch(searchText) // 🟢 鍵盤輸入使用混合搜尋
+                                    }
+                                },
+                                onDelete = {
+                                    if (searchText.isNotEmpty()) {
+                                        searchText = searchText.dropLast(1)
+                                        scope.launch {
+                                            results = if (searchText.isNotEmpty()) mixedSearch(searchText) else emptyList()
                                         }
                                     }
+                                },
+                                onCandidateSelect = { entity ->
+                                    val word = entity.word ?: ""
+                                    searchText = word
+                                    isRadicalMode = false
+                                    selectedRadical = null
+                                    addToHistory(word)
+                                    scope.launch {
+                                        results = dao.search(searchText).filter { it.word?.startsWith(searchText) == true }.sortedBy { it.word?.length }
+                                    }
+                                    currentDetailItem = null
                                 }
-                            },
-                            onCandidateSelect = { entity ->
-                                searchText = entity.word ?: ""
-                                isRadicalMode = false
-                                selectedRadical = null
-                                scope.launch {
-                                    results = dao.search(searchText)
-                                        .filter { it.word?.startsWith(searchText) == true }
-                                        .sortedBy { it.word?.length }
-                                }
-                                currentDetailItem = null
-                            }
-                        )
+                            )
+                            LegalFooter()
+                        }
                     }
                 }
             }
         ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .padding(innerPadding)
-                    .fillMaxSize()
-                    .background(AppTheme.Background)
-            ) {
+            Box(modifier = Modifier.padding(innerPadding).fillMaxSize().background(AppTheme.Background)) {
                 if (isRadicalMode && selectedRadical == null) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("請選擇部首：", modifier = Modifier.padding(bottom = 8.dp), color = Color.Gray)
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 60.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        LazyVerticalGrid(columns = GridCells.Adaptive(minSize = 60.dp), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(allRadicals) { radical ->
-                                Box(
-                                    modifier = Modifier
-                                        .aspectRatio(1f)
-                                        .background(Color.White, RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            selectedRadical = radical
-                                            scope.launch { results = dao.getWordsByRadical(radical) }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
+                                Box(modifier = Modifier.aspectRatio(1f).background(Color.White, RoundedCornerShape(8.dp)).clickable { selectedRadical = radical; scope.launch { results = dao.getWordsByRadical(radical) } }, contentAlignment = Alignment.Center) {
                                     Text(radical, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AppTheme.Primary)
                                 }
                             }
                         }
                     }
                 } else {
-                    if (results.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(if (searchText.isNotEmpty()) "查無結果" else "👋 歡迎使用", color = Color.Gray)
+                    if (searchText.isEmpty() && results.isEmpty()) {
+                        if (historyList.isNotEmpty()) {
+                            Column {
+                                Text(
+                                    text = "最近查詢 (100筆)",
+                                    color = Color.Gray,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 8.dp)
+                                )
+                                LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                                    items(historyList) { historyItem ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    searchText = historyItem.word
+                                                    scope.launch {
+                                                        results = dao.search(searchText).sortedBy { it.word?.length }
+                                                        addToHistory(historyItem.word)
+                                                    }
+                                                }
+                                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.History, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+                                            Spacer(Modifier.width(16.dp))
+                                            Text(historyItem.word, color = Color.White, fontSize = 18.sp)
+                                        }
+                                        Divider(color = Color.DarkGray, thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 16.dp))
+                                    }
+                                }
+                            }
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("👋 歡迎使用\n輸入單字或注音開始查詢", color = Color.Gray, textAlign = TextAlign.Center)
+                            }
                         }
+                    } else if (results.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("查無結果", color = Color.Gray) }
                     } else {
                         LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                             items(results) { entity ->
                                 SearchResultRow(
-                                    item = DictItem(
-                                        word = entity.word ?: "",
-                                        phonetic = entity.phonetic ?: "",
-                                        definition = entity.definition ?: "",
-                                        radical = entity.radical ?: "",
-                                        strokeCount = entity.strokeCount ?: 0
-                                    ),
-                                    onClick = { currentDetailItem = entity }
+                                    item = DictItem(word = entity.word ?: "", phonetic = entity.phonetic ?: "", definition = entity.definition ?: "", radical = entity.radical ?: "", strokeCount = entity.strokeCount ?: 0),
+                                    onClick = {
+                                        currentDetailItem = entity
+                                        addToHistory(entity.word ?: "")
+                                    }
                                 )
                             }
                         }
@@ -386,45 +390,34 @@ fun ContentView() {
     }
 }
 
+// ... LegalFooter, BannerAdView, purchasePro 保持不變 ...
+@Composable
+fun LegalFooter() {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = "隱私權政策", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.clickable { uriHandler.openUri("https://eric1207cvb.github.io/StudentDict-Android/") }.padding(8.dp))
+        Text(text = "  |  ", color = Color.Gray, fontSize = 11.sp)
+        Text(text = if (UserState.isAdFree) "專業版已啟用" else "移除廣告", color = AppTheme.Secondary, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { if (!UserState.isAdFree) { val activity = context as? Activity; activity?.let { purchasePro(it) } } }.padding(8.dp))
+    }
+}
+
 @Composable
 fun BannerAdView() {
-    AndroidView(
-        modifier = Modifier.fillMaxWidth().height(50.dp),
-        factory = { context ->
-            AdView(context).apply {
-                setAdSize(AdSize.BANNER)
-                adUnitId = "ca-app-pub-8563333250584395/2298788798"
-                loadAd(AdRequest.Builder().build())
-            }
-        }
-    )
+    AndroidView(modifier = Modifier.fillMaxWidth().height(50.dp), factory = { context -> AdView(context).apply { setAdSize(AdSize.BANNER); adUnitId = "ca-app-pub-8563333250584395/2298788798"; loadAd(AdRequest.Builder().build()) } })
 }
 
 fun purchasePro(activity: Activity) {
     Purchases.sharedInstance.getOfferingsWith(
-        onError = { error ->
-            Toast.makeText(activity, "無法取得購買項目: ${error.message}", Toast.LENGTH_SHORT).show()
-        },
+        onError = { Toast.makeText(activity, "無法取得購買項目: ${it.message}", Toast.LENGTH_SHORT).show() },
         onSuccess = { offerings ->
-            val packageToBuy = offerings["main"]?.lifetime
-                ?: offerings.current?.availablePackages?.firstOrNull()
-
-            packageToBuy?.let { pkg ->
-                Purchases.sharedInstance.purchaseWith(
-                    PurchaseParams.Builder(activity, pkg).build(),
-                    onError = { error, userCancelled ->
-                        if (!userCancelled) {
-                            Toast.makeText(activity, "購買失敗: ${error.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onSuccess = { _, customerInfo ->
-                        if (customerInfo.entitlements["premium"]?.isActive == true) {
-                            UserState.isAdFree = true
-                            Toast.makeText(activity, "感謝購買！廣告已移除", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                )
-            }
+            val pkg = offerings["main"]?.lifetime ?: offerings.current?.availablePackages?.firstOrNull()
+            pkg?.let { Purchases.sharedInstance.purchaseWith(PurchaseParams.Builder(activity, it).build(), onError = { e, c -> if(!c) Toast.makeText(activity, "購買失敗: ${e.message}", Toast.LENGTH_SHORT).show() }, onSuccess = { _, info -> if (info.entitlements["premium"]?.isActive == true) { UserState.isAdFree = true; Toast.makeText(activity, "感謝購買！廣告已移除", Toast.LENGTH_SHORT).show() } }) } ?: Toast.makeText(activity, "錯誤：找不到商品 (請確認測試權限)", Toast.LENGTH_LONG).show()
         }
     )
 }

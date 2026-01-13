@@ -14,20 +14,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.font.FontWeight // 🟢 補上這行就正常了
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yian.studentdict.data.DictEntity
 import java.util.UUID
-
-// --- 🟢 [Version Update] 全域訂閱狀態 ---
-object UserState {
-    var isAdFree by mutableStateOf(false) // 預設顯示廣告，付費後改為 true
-}
 
 // --- 1. iOS 深色主題配色 ---
 object AppTheme {
@@ -147,19 +138,6 @@ fun ZhuyinKeyboard(
     val spacing = 6.dp
     Column(modifier = Modifier.fillMaxWidth().background(AppTheme.KeyboardBackground).navigationBarsPadding()) {
 
-        // 🟢 [Version Update] 廣告空間佔位：僅在非付費狀態顯示
-        if (!UserState.isAdFree) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .background(Color.DarkGray.copy(alpha = 0.5f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("AdMob Banner Area", color = Color.White, fontSize = 10.sp)
-            }
-        }
-
         CandidateBar(candidates = results, onCandidateClick = onCandidateSelect)
         Column(modifier = Modifier.padding(6.dp).fillMaxWidth()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
@@ -191,8 +169,7 @@ fun ZhuyinKeyboard(
                 lastRow.forEach { NormalKey(it, KeyboardColors.Finals, Modifier.weight(1f).height(keyHeight), onKeyClick) }
                 Spacer(modifier = Modifier.weight(3f))
             }
-            Spacer(modifier = Modifier.height(16.dp))
-            LegalFooter()
+
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
@@ -212,26 +189,5 @@ fun ToneButton(symbol: String, label: String, modifier: Modifier, onClick: () ->
             Text(text = symbol, color = KeyboardColors.ToneText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text(text = label, color = KeyboardColors.ToneSubText, fontSize = 10.sp)
         }
-    }
-}
-
-@Composable
-fun LegalFooter() {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        val textStyle = SpanStyle(color = KeyboardColors.LegalText, fontSize = 11.sp)
-        val annotatedString = buildAnnotatedString {
-            // 🟢 [Version Update] 點擊觸發付費/隱私權邏輯
-            withStyle(textStyle) { append("隱私權政策   |   使用者授權合約   |   ") }
-            withStyle(textStyle.copy(color = AppTheme.Secondary, fontWeight = FontWeight.Bold)) {
-                append(if (UserState.isAdFree) "專業版已啟用" else "移除廣告")
-            }
-        }
-        Text(text = annotatedString, modifier = Modifier.clickable {
-            // 這裡未來會串接 RevenueCat 的購買函數
-        })
     }
 }
