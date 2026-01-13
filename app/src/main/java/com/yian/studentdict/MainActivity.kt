@@ -31,10 +31,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -42,40 +44,27 @@ import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
 import com.google.android.gms.ads.MobileAds
-import com.revenuecat.purchases.CustomerInfo
-import com.revenuecat.purchases.Purchases
-import com.revenuecat.purchases.PurchasesConfiguration
+import com.revenuecat.purchases.*
 import com.revenuecat.purchases.interfaces.ReceiveCustomerInfoCallback
-import com.revenuecat.purchases.models.StoreTransaction
-import com.revenuecat.purchases.PurchaseParams
-import com.revenuecat.purchases.getOfferingsWith
-import com.revenuecat.purchases.purchaseWith
 import com.yian.studentdict.data.AppDatabase
 import com.yian.studentdict.data.DictEntity
 import kotlinx.coroutines.launch
-import androidx.compose.ui.draw.clip
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 🟢 1. 初始化 AdMob
         MobileAds.initialize(this) {}
 
-        // 🟢 2. 初始化 RevenueCat (請替換為您的 API Key)
         Purchases.configure(
-            PurchasesConfiguration.Builder(this, "goog_your_revenuecat_api_key").build()
+            PurchasesConfiguration.Builder(this, "goog_JCoyQUudGrxMArsKUtXsNcEHicQ").build()
         )
 
-        // 🟢 3. 檢查訂閱狀態
         Purchases.sharedInstance.getCustomerInfo(object : ReceiveCustomerInfoCallback {
             override fun onReceived(customerInfo: CustomerInfo) {
-                // 假設您的 Entitlement ID 叫 "pro"
-                UserState.isAdFree = customerInfo.entitlements["pro"]?.isActive == true
+                UserState.isAdFree = customerInfo.entitlements["premium"]?.isActive == true
             }
-            override fun onError(error: com.revenuecat.purchases.PurchasesError) {
-                // 處理錯誤
-            }
+            override fun onError(error: PurchasesError) {}
         })
 
         setContent {
@@ -94,23 +83,22 @@ fun ContentView() {
     val dao = remember { db.dictDao() }
     val scope = rememberCoroutineScope()
 
-    // --- 狀態變數 ---
     var searchText by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<DictEntity>>(emptyList()) }
     var showCustomKeyboard by remember { mutableStateOf(true) }
-
-    // 部首模式
     var isRadicalMode by remember { mutableStateOf(false) }
     var allRadicals by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedRadical by remember { mutableStateOf<String?>(null) }
-
-    // 詳情頁狀態
     var currentDetailItem by remember { mutableStateOf<DictEntity?>(null) }
 
     val configuration = LocalConfiguration.current
     val isTablet = configuration.screenWidthDp > 600
 
-    // 語音輸入
+    // 判斷是否為聲調符號的輔助函式
+    fun isToneSymbol(char: String): Boolean {
+        return listOf("ˊ", "ˇ", "ˋ", "˙").contains(char)
+    }
+
     val voiceLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -129,13 +117,12 @@ fun ContentView() {
         }
     }
 
-    // 載入部首並進行排序
     LaunchedEffect(Unit) {
         scope.launch {
             val rawList = dao.getAllRadicals()
-            allRadicals = rawList.sortedBy { radical ->
-                RadicalOrder.getIndex(radical)
-            }
+            allRadicals = rawList
+                .filter { it.isNotBlank() }
+                .sortedBy { RadicalOrder.getIndex(it) }
         }
     }
 
@@ -153,10 +140,7 @@ fun ContentView() {
                 strokeCount = it.strokeCount ?: 0
             )
         }
-        WordDetailScreen(
-            item = item,
-            onBack = { currentDetailItem = null }
-        )
+        WordDetailScreen(item = item, onBack = { currentDetailItem = null })
     } else {
         Scaffold(
             topBar = {
@@ -169,40 +153,40 @@ fun ContentView() {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // 1. 左側標題：佔據剩餘空間，確保標題一定在最左邊
                         Text(
                             text = if (selectedRadical != null) "部首：$selectedRadical" else "國語辭典簡編本",
                             style = MaterialTheme.typography.titleLarge,
                             color = AppTheme.Primary,
                             fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
 
-                        // 2. 右側按鈕組
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // 🟢 移除廣告 (僅在未付費時顯示)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             if (!UserState.isAdFree) {
-                                Box(
+                                Surface(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(AppTheme.Secondary.copy(alpha = 0.1f)) // 輕微底色
-                                        .clickable { purchasePro(activity) }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                        .clickable { purchasePro(activity) },
+                                    color = AppTheme.Secondary.copy(alpha = 0.15f)
                                 ) {
                                     Text(
                                         "移除廣告",
                                         color = AppTheme.Secondary,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
                             }
 
-                            // 🟢 部首表按鈕
                             Button(
                                 onClick = {
                                     isRadicalMode = !isRadicalMode
@@ -212,15 +196,15 @@ fun ContentView() {
                                     showCustomKeyboard = !isRadicalMode
                                 },
                                 shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                modifier = Modifier.height(36.dp),
+                                modifier = Modifier.height(34.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = if (isRadicalMode) AppTheme.Primary else AppTheme.KeyBackground
                                 )
                             ) {
-                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (isRadicalMode) "關閉" else "部首", fontSize = 13.sp)
+                                Text(if (isRadicalMode) "關閉" else "部首", fontSize = 12.sp)
                             }
                         }
                     }
@@ -232,7 +216,7 @@ fun ContentView() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp)
-                                .height(if (isTablet) 50.dp else 40.dp)
+                                .height(if (isTablet) 52.dp else 44.dp)
                                 .background(AppTheme.CardBackground, RoundedCornerShape(10.dp))
                                 .padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -256,11 +240,7 @@ fun ContentView() {
                                 } else if (selectedRadical != null) {
                                     Text("正在顯示「$selectedRadical」部首的字", color = AppTheme.Primary)
                                 } else {
-                                    Text(
-                                        text = searchText,
-                                        color = Color.White,
-                                        fontSize = 18.sp
-                                    )
+                                    Text(text = searchText, color = Color.White, fontSize = 18.sp)
                                 }
                             }
 
@@ -269,7 +249,6 @@ fun ContentView() {
                                     searchText = ""
                                     selectedRadical = null
                                     results = emptyList()
-                                    if (isRadicalMode) results = emptyList()
                                 }) {
                                     Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.Gray)
                                 }
@@ -280,18 +259,13 @@ fun ContentView() {
                                     val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                                         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                                         putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW")
-                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "請說出想查的字詞...")
                                     }
                                     voiceLauncher.launch(intent)
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "您的裝置不支援語音輸入", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "不支援語音輸入", Toast.LENGTH_SHORT).show()
                                 }
                             }) {
-                                Icon(
-                                    imageVector = Icons.Default.Mic,
-                                    contentDescription = "Voice Input",
-                                    tint = AppTheme.Secondary
-                                )
+                                Icon(Icons.Default.Mic, contentDescription = "Voice", tint = AppTheme.Secondary)
                             }
                         }
                     }
@@ -299,7 +273,6 @@ fun ContentView() {
             },
             bottomBar = {
                 Column {
-                    // 🟢 廣告預留區：根據付費狀態決定是否顯示廣告
                     if (!UserState.isAdFree) {
                         BannerAdView()
                     }
@@ -316,7 +289,16 @@ fun ContentView() {
                                 selectedRadical = null
                                 searchText += char
                                 scope.launch {
-                                    results = dao.search(searchText).sortedBy { it.word?.length }
+                                    // 🟢 智慧搜尋優化
+                                    var searchResults = dao.search(searchText)
+
+                                    // 💡 如果目前搜尋不到結果，且使用者輸入的不是聲調（可能是隱藏的一聲）
+                                    if (searchResults.isEmpty() && !isToneSymbol(char)) {
+                                        // 嘗試加上「ˉ」一聲標記再搜一次
+                                        searchResults = dao.search(searchText + "ˉ")
+                                    }
+
+                                    results = searchResults.sortedBy { it.word?.length }
                                 }
                             },
                             onDelete = {
@@ -332,8 +314,7 @@ fun ContentView() {
                                 }
                             },
                             onCandidateSelect = { entity ->
-                                val selectedWord = entity.word ?: ""
-                                searchText = selectedWord
+                                searchText = entity.word ?: ""
                                 isRadicalMode = false
                                 selectedRadical = null
                                 scope.launch {
@@ -369,9 +350,7 @@ fun ContentView() {
                                         .background(Color.White, RoundedCornerShape(8.dp))
                                         .clickable {
                                             selectedRadical = radical
-                                            scope.launch {
-                                                results = dao.getWordsByRadical(radical)
-                                            }
+                                            scope.launch { results = dao.getWordsByRadical(radical) }
                                         },
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -382,34 +361,11 @@ fun ContentView() {
                     }
                 } else {
                     if (results.isEmpty()) {
-                        if (searchText.isNotEmpty()) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("查無結果", color = Color.Gray)
-                            }
-                        } else if (selectedRadical == null && !isRadicalMode) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("👋 歡迎使用", fontSize = 24.sp, color = Color.Gray)
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text("輸入單字、注音，或是點擊上方「部首表」查找", color = Color.LightGray)
-                                }
-                            }
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(if (searchText.isNotEmpty()) "查無結果" else "👋 歡迎使用", color = Color.Gray)
                         }
                     } else {
-                        LazyColumn(
-                            contentPadding = PaddingValues(bottom = 16.dp)
-                        ) {
-                            if (selectedRadical != null) {
-                                item {
-                                    Text(
-                                        "部首「$selectedRadical」共 ${results.size} 字",
-                                        color = Color.Gray,
-                                        fontSize = 14.sp,
-                                        modifier = Modifier.padding(16.dp)
-                                    )
-                                }
-                            }
-
+                        LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                             items(results) { entity ->
                                 SearchResultRow(
                                     item = DictItem(
@@ -419,9 +375,7 @@ fun ContentView() {
                                         radical = entity.radical ?: "",
                                         strokeCount = entity.strokeCount ?: 0
                                     ),
-                                    onClick = {
-                                        currentDetailItem = entity
-                                    }
+                                    onClick = { currentDetailItem = entity }
                                 )
                             }
                         }
@@ -432,7 +386,6 @@ fun ContentView() {
     }
 }
 
-// 🟢 AdMob 橫幅廣告元件
 @Composable
 fun BannerAdView() {
     AndroidView(
@@ -440,40 +393,37 @@ fun BannerAdView() {
         factory = { context ->
             AdView(context).apply {
                 setAdSize(AdSize.BANNER)
-                // 測試用 ID，正式發布請換成自己的 Ad Unit ID
-                adUnitId = "ca-app-pub-3940256099942544/6300978111"
+                adUnitId = "ca-app-pub-8563333250584395/2298788798"
                 loadAd(AdRequest.Builder().build())
             }
         }
     )
 }
 
-// 🟢 RevenueCat 購買邏輯
 fun purchasePro(activity: Activity) {
     Purchases.sharedInstance.getOfferingsWith(
         onError = { error ->
             Toast.makeText(activity, "無法取得購買項目: ${error.message}", Toast.LENGTH_SHORT).show()
         },
         onSuccess = { offerings ->
-            offerings.current?.let { offering ->
-                val packageToBuy = offering.availablePackages.firstOrNull()
-                packageToBuy?.let {
-                    Purchases.sharedInstance.purchaseWith(
-                        PurchaseParams.Builder(activity, it).build(),
-                        onError = { error, userCancelled ->
-                            // 修正點：確保參數中有 userCancelled
-                            if (!userCancelled) {
-                                Toast.makeText(activity, "購買失敗: ${error.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        onSuccess = { _, customerInfo ->
-                            if (customerInfo.entitlements["pro"]?.isActive == true) {
-                                UserState.isAdFree = true
-                                Toast.makeText(activity, "感謝購買！廣告已移除", Toast.LENGTH_SHORT).show()
-                            }
+            val packageToBuy = offerings["main"]?.lifetime
+                ?: offerings.current?.availablePackages?.firstOrNull()
+
+            packageToBuy?.let { pkg ->
+                Purchases.sharedInstance.purchaseWith(
+                    PurchaseParams.Builder(activity, pkg).build(),
+                    onError = { error, userCancelled ->
+                        if (!userCancelled) {
+                            Toast.makeText(activity, "購買失敗: ${error.message}", Toast.LENGTH_SHORT).show()
                         }
-                    )
-                }
+                    },
+                    onSuccess = { _, customerInfo ->
+                        if (customerInfo.entitlements["premium"]?.isActive == true) {
+                            UserState.isAdFree = true
+                            Toast.makeText(activity, "感謝購買！廣告已移除", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
             }
         }
     )
