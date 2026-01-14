@@ -10,9 +10,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -63,6 +61,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MobileAds.initialize(this) {}
+
+        // 初始化 RevenueCat
         Purchases.configure(
             PurchasesConfiguration.Builder(this, "goog_JCoyQUudGrxMArsKUtXsNcEHicQ").build()
         )
@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
             }
             override fun onError(error: PurchasesError) {}
         })
+
         setContent { MaterialTheme { ContentView() } }
     }
 }
@@ -104,7 +105,7 @@ fun ContentView() {
         return (char in '\u3105'..'\u3129') || listOf('ˉ', 'ˊ', 'ˇ', 'ˋ', '˙').contains(char)
     }
 
-    // 🟢 修正後的混合搜尋邏輯
+    // 混合搜尋邏輯
     suspend fun mixedSearch(input: String): List<DictEntity> {
         val hasZhuyin = input.any { isZhuyin(it) }
         val hasChinese = input.any { !isZhuyin(it) }
@@ -119,40 +120,31 @@ fun ContentView() {
             return list.sortedBy { it.word?.length }
         }
 
-        // 2. 混合模式 (例如：老ㄕ)
-        // 找出最後一個國字的位置，切割字串
+        // 2. 混合模式
         val lastChineseIndex = input.indexOfLast { !isZhuyin(it) }
-        val chinesePart = input.substring(0, lastChineseIndex + 1) // "老"
-        val zhuyinPart = input.substring(lastChineseIndex + 1).trim() // "ㄕ"
+        val chinesePart = input.substring(0, lastChineseIndex + 1)
+        val zhuyinPart = input.substring(lastChineseIndex + 1).trim()
 
         if (chinesePart.isEmpty()) return emptyList()
 
-        // 🟢 關鍵修正：改用 getCandidates 抓取前 500 筆符合開頭的資料
-        // 這樣可以避免 "老師" 因為排序問題被擠出前 100 名
         val candidates = dao.getCandidates(chinesePart)
 
         return candidates.filter { entity ->
             val word = entity.word ?: ""
-            val phonetic = entity.phonetic ?: "" // 格式可能為 "ㄌㄠˇ　ㄕ" (全形空白)
+            val phonetic = entity.phonetic ?: ""
 
-            // 如果單字長度比輸入的國字部分還短，不可能匹配
             if (word.length <= chinesePart.length) return@filter false
 
-            // 🟢 關鍵修正：使用 Regex("\\s+") 同時處理半形與全形空白
             val phoneticParts = phonetic
-                .replace("　", " ") // 先把全形空白轉半形，以防萬一
+                .replace("　", " ")
                 .split(Regex("\\s+"))
                 .filter { it.isNotBlank() }
 
-            // 我們要比對的是「輸入國字長度」位置的注音
-            // 例如 "老(index 0) ㄕ"，我們要比對 phoneticParts[1]
             val targetIndex = chinesePart.length
 
             if (targetIndex < phoneticParts.size) {
-                // 去除聲調後比對
                 val targetPhonetic = phoneticParts[targetIndex]
                     .replace("ˉ", "").replace("ˊ", "").replace("ˇ", "").replace("ˋ", "").replace("˙", "")
-
                 targetPhonetic.startsWith(zhuyinPart)
             } else {
                 false
@@ -203,8 +195,19 @@ fun ContentView() {
     } else {
         Scaffold(
             topBar = {
-                Column(modifier = Modifier.fillMaxWidth().background(AppTheme.Background).padding(top = 16.dp, bottom = 8.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                // ✅ 標題列修正：加入 statusBarsPadding 避開系統狀態列
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AppTheme.Background)
+                        .statusBarsPadding() // 🔴 關鍵修正：自動避開時間與訊號欄
+                        .padding(bottom = 8.dp) // 保持底部間距
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Text(
                             text = if (selectedRadical != null) "部首：$selectedRadical" else "國語辭典簡編本",
                             style = MaterialTheme.typography.titleLarge,
@@ -215,7 +218,12 @@ fun ContentView() {
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.wrapContentWidth()
+                        ) {
                             if (!UserState.isAdFree) {
                                 Surface(modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { purchasePro(activity) }, color = AppTheme.Secondary.copy(alpha = 0.2f)) {
                                     Text("移除廣告", color = AppTheme.Secondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp))
@@ -276,7 +284,14 @@ fun ContentView() {
             },
             bottomBar = {
                 Column {
-                    if (!UserState.isAdFree) BannerAdView()
+                    AnimatedVisibility(
+                        visible = !UserState.isAdFree,
+                        enter = expandVertically(),
+                        exit = shrinkVertically()
+                    ) {
+                        BannerAdView()
+                    }
+
                     AnimatedVisibility(
                         visible = showCustomKeyboard,
                         enter = slideInVertically { it },
@@ -290,7 +305,7 @@ fun ContentView() {
                                     selectedRadical = null
                                     searchText += char
                                     scope.launch {
-                                        results = mixedSearch(searchText) // 🟢 鍵盤輸入使用混合搜尋
+                                        results = mixedSearch(searchText)
                                     }
                                 },
                                 onDelete = {
@@ -390,7 +405,7 @@ fun ContentView() {
     }
 }
 
-// ... LegalFooter, BannerAdView, purchasePro 保持不變 ...
+// ... LegalFooter, purchasePro 保持不變 ...
 @Composable
 fun LegalFooter() {
     val context = LocalContext.current
@@ -409,7 +424,19 @@ fun LegalFooter() {
 
 @Composable
 fun BannerAdView() {
-    AndroidView(modifier = Modifier.fillMaxWidth().height(50.dp), factory = { context -> AdView(context).apply { setAdSize(AdSize.BANNER); adUnitId = "ca-app-pub-8563333250584395/2298788798"; loadAd(AdRequest.Builder().build()) } })
+    AndroidView(
+        modifier = Modifier.fillMaxWidth().height(50.dp),
+        factory = { context ->
+            AdView(context).apply {
+                setAdSize(AdSize.BANNER)
+                adUnitId = "ca-app-pub-8563333250584395/2298788798"
+                loadAd(AdRequest.Builder().build())
+            }
+        },
+        update = { adView ->
+            adView.loadAd(AdRequest.Builder().build())
+        }
+    )
 }
 
 fun purchasePro(activity: Activity) {
